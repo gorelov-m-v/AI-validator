@@ -14,9 +14,11 @@ type Config struct {
 }
 
 type KafkaConfig struct {
-	Brokers []string `mapstructure:"brokers"`
-	Topic   string   `mapstructure:"topic"`
-	GroupID string   `mapstructure:"group_id"`
+	Brokers        []string `mapstructure:"brokers"`
+	Topic          string   `mapstructure:"topic"`
+	GroupID        string   `mapstructure:"group_id"`
+	BatchSize      int      `mapstructure:"batch_size"`
+	BatchMaxWaitMs int      `mapstructure:"batch_max_wait_ms"`
 }
 
 type DBConfig struct {
@@ -64,6 +66,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Kafka.GroupID == "" {
 		return fmt.Errorf("kafka.group_id is required")
+	}
+	if c.Kafka.BatchSize == 0 {
+		c.Kafka.BatchSize = 100
+	}
+	if c.Kafka.BatchMaxWaitMs == 0 {
+		c.Kafka.BatchMaxWaitMs = 200
 	}
 	if c.DB.DSN == "" {
 		return fmt.Errorf("db.dsn is required")
