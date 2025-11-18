@@ -119,29 +119,119 @@ func main() {
 					zap.Int("batch_size", len(batch)),
 				)
 
-				successfulMessages := make([]*kafka.Message, 0, len(batch))
+				// Состояние обработки по партициям
+				type partitionState struct {
+					hasInfraError bool
+					lastMessage   *kafka.Message // последнее успешно обработанное сообщение
+					messagesCount int
+				}
+				partitionStates := make(map[int]*partitionState)
+
+				var okCount, domainErrorCount, duplicateCount, infraErrorCount int
+
 				for _, msg := range batch {
-					if err := proc.ProcessMessage(ctx, msg); err != nil {
-						logger.Error("failed to process message",
-							zap.Error(err),
+					state, exists := partitionStates[msg.Partition]
+					if !exists {
+						state = &partitionState{}
+						partitionStates[msg.Partition] = state
+					}
+
+					// Если по партиции уже была infra error, пропускаем дальнейшие сообщения
+					if state.hasInfraError {
+						logger.Debug("skipping message due to previous infra error in partition",
+							zap.Int("partition", msg.Partition),
+							zap.Int64("offset", msg.Offset),
+						)
+						continue
+					}
+
+					// Обработка сообщения
+					result := proc.ProcessMessage(ctx, msg)
+
+					// Логирование результата обработки
+					switch result.Type {
+					case processor.ResultOK:
+						logger.Debug("message processed successfully",
+							zap.String("env", cfg.Env),
 							zap.String("topic", msg.Topic),
 							zap.Int("partition", msg.Partition),
 							zap.Int64("offset", msg.Offset),
 						)
-						break
-					}
+						okCount++
+						state.lastMessage = msg
+						state.messagesCount++
 
-					successfulMessages = append(successfulMessages, msg)
-					messageCount.Add(1)
+					case processor.ResultDomainError:
+						logger.Warn("message processed with domain error",
+							zap.String("env", cfg.Env),
+							zap.String("topic", msg.Topic),
+							zap.Int("partition", msg.Partition),
+							zap.Int64("offset", msg.Offset),
+							zap.String("reason", result.Message),
+						)
+						domainErrorCount++
+						state.lastMessage = msg
+						state.messagesCount++
+
+					case processor.ResultDuplicateOffset:
+						logger.Debug("duplicate offset skipped",
+							zap.String("env", cfg.Env),
+							zap.String("topic", msg.Topic),
+							zap.Int("partition", msg.Partition),
+							zap.Int64("offset", msg.Offset),
+						)
+						duplicateCount++
+						state.lastMessage = msg
+						state.messagesCount++
+
+					case processor.ResultInfraError:
+						logger.Error("infra error during message processing",
+							zap.Error(result.Err),
+							zap.String("env", cfg.Env),
+							zap.String("topic", msg.Topic),
+							zap.Int("partition", msg.Partition),
+							zap.Int64("offset", msg.Offset),
+							zap.String("reason", result.Message),
+						)
+						infraErrorCount++
+						state.hasInfraError = true
+						// lastMessage остаётся указывать на последнее успешно обработанное
+					}
 				}
 
-				if len(successfulMessages) > 0 {
-					if err := consumer.CommitBatch(ctx, successfulMessages); err != nil {
+				// Подготовка списка для коммита (один offset на партицию)
+				// Коммитим lastMessage независимо от hasInfraError:
+				// - если infra error на первом сообщении: lastMessage == nil, ничего не коммитим
+				// - если были успешные, потом infra error: коммитим последний успешный
+				messagesToCommit := make([]*kafka.Message, 0, len(partitionStates))
+				for _, state := range partitionStates {
+					if state.lastMessage != nil {
+						messagesToCommit = append(messagesToCommit, state.lastMessage)
+					}
+				}
+
+				if len(messagesToCommit) > 0 {
+					if err := consumer.CommitBatch(ctx, messagesToCommit); err != nil {
 						logger.Error("failed to commit batch",
 							zap.Error(err),
-							zap.Int("messages", len(successfulMessages)),
+							zap.Int("messages", len(messagesToCommit)),
 						)
+					} else {
+						logger.Info("batch processed and committed",
+							zap.Int("total_messages", len(batch)),
+							zap.Int("ok", okCount),
+							zap.Int("domain_errors", domainErrorCount),
+							zap.Int("duplicates", duplicateCount),
+							zap.Int("infra_errors", infraErrorCount),
+							zap.Int("committed_partitions", len(messagesToCommit)),
+						)
+						messageCount.Add(int64(okCount + domainErrorCount + duplicateCount))
 					}
+				} else {
+					logger.Warn("no messages to commit in batch",
+						zap.Int("total_messages", len(batch)),
+						zap.Int("infra_errors", infraErrorCount),
+					)
 				}
 			}
 		}

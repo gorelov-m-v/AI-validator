@@ -96,7 +96,7 @@ func (r *Repository) InsertBonusEvent(ctx context.Context, event *models.BonusEv
 	return 0, nil
 }
 
-func (r *Repository) InsertBonusEventWithError(ctx context.Context, env, topic string, partition int, offset int64, rawJSON []byte, schemaError string) error {
+func (r *Repository) InsertBonusEventWithError(ctx context.Context, env, topic string, partition int, offset int64, rawJSON []byte, schemaError string) (int64, error) {
 	query := `
 		INSERT INTO bonus_events_validation (
 			env, kafka_topic, kafka_partition, kafka_offset,
@@ -119,22 +119,41 @@ func (r *Repository) InsertBonusEventWithError(ctx context.Context, env, topic s
 			$6
 		)
 		ON CONFLICT (env, kafka_topic, kafka_partition, kafka_offset) DO NOTHING
+		RETURNING id
 	`
 
-	_, err := r.db.conn.ExecContext(ctx, query, env, topic, partition, offset, schemaError, rawJSON)
+	rows, err := r.db.conn.QueryxContext(ctx, query, env, topic, partition, offset, schemaError, rawJSON)
 	if err != nil {
-		return fmt.Errorf("failed to insert error event: %w", err)
+		return 0, fmt.Errorf("failed to insert error event: %w", err)
+	}
+	defer rows.Close()
+
+	var insertedID int64
+	if rows.Next() {
+		if err := rows.Scan(&insertedID); err != nil {
+			return 0, fmt.Errorf("failed to scan inserted ID: %w", err)
+		}
+
+		r.logger.Warn("invalid event inserted",
+			zap.String("env", env),
+			zap.String("topic", topic),
+			zap.Int("partition", partition),
+			zap.Int64("offset", offset),
+			zap.Int64("id", insertedID),
+			zap.String("error", schemaError),
+		)
+
+		return insertedID, nil
 	}
 
-	r.logger.Warn("invalid event inserted",
+	r.logger.Debug("duplicate error event skipped",
 		zap.String("env", env),
 		zap.String("topic", topic),
 		zap.Int("partition", partition),
 		zap.Int64("offset", offset),
-		zap.String("error", schemaError),
 	)
 
-	return nil
+	return 0, nil
 }
 
 func (r *Repository) GetSequenceStateForUpdate(ctx context.Context, env string, seqKey string) (*models.BonusSequenceState, error) {

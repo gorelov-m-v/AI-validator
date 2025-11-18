@@ -14,6 +14,27 @@ import (
 	"go.uber.org/zap"
 )
 
+// ProcessingResultType классифицирует результат обработки сообщения
+type ProcessingResultType int
+
+const (
+	// ResultOK - событие успешно обработано без ошибок
+	ResultOK ProcessingResultType = iota
+	// ResultDomainError - бизнес-ошибка (схема, последовательность, инварианты)
+	ResultDomainError
+	// ResultDuplicateOffset - технический дубль offset (уже обработано)
+	ResultDuplicateOffset
+	// ResultInfraError - инфраструктурная ошибка (БД, транзакции)
+	ResultInfraError
+)
+
+// ProcessingResult содержит результат обработки одного сообщения
+type ProcessingResult struct {
+	Type    ProcessingResultType
+	Message string
+	Err     error
+}
+
 type Processor struct {
 	env        string
 	db         *database.DB
@@ -31,97 +52,135 @@ func New(env string, db *database.DB, repo *database.Repository, logger *zap.Log
 	}
 }
 
-func (p *Processor) ProcessMessage(ctx context.Context, msg *kafka.Message) error {
+func (p *Processor) ProcessMessage(ctx context.Context, msg *kafka.Message) ProcessingResult {
 	p.logger.Debug("processing message",
 		zap.String("topic", msg.Topic),
 		zap.Int("partition", msg.Partition),
 		zap.Int64("offset", msg.Offset),
 		zap.String("key", string(msg.Key)),
-		zap.String("value", string(msg.Value)),
 	)
 
+	// Стадия 1: Парсинг и проверка схемы
 	bonusMsg, err := models.ParseBonusMessage(msg.Value)
 	if err != nil {
-		p.logger.Warn("failed to parse bonus message",
-			zap.Error(err),
-			zap.Int64("offset", msg.Offset),
-		)
-
-		if insertErr := p.repo.InsertBonusEventWithError(
-			ctx,
-			p.env,
-			msg.Topic,
-			msg.Partition,
-			msg.Offset,
-			msg.Value,
-			err.Error(),
-		); insertErr != nil {
-			p.errorCount.Add(1)
-			return fmt.Errorf("failed to insert error event: %w", insertErr)
-		}
-
-		return nil
+		return p.handleSchemaError(ctx, msg, fmt.Sprintf("JSON parsing failed: %v", err))
 	}
 
+	// Проверка поддерживаемых типов событий
 	supportedTypes := map[string]bool{
 		"playerBonusCreate": true,
 		"playerBonusUpdate": true,
 	}
 	if !supportedTypes[bonusMsg.Message.EventType] {
-		p.logger.Warn("unsupported eventType, skipping",
+		p.logger.Debug("unsupported eventType, skipping",
 			zap.String("event_type", bonusMsg.Message.EventType),
 			zap.String("topic", msg.Topic),
 			zap.Int64("offset", msg.Offset),
 		)
-		return nil
+		// Неподдерживаемые типы пропускаем без записи
+		return ProcessingResult{Type: ResultOK, Message: "unsupported event type"}
 	}
 
+	// Стадия 2: Формирование события для валидации
 	event, err := bonusMsg.ToEventValidation(p.env, msg.Topic, msg.Partition, msg.Offset, msg.Value)
 	if err != nil {
-		p.logger.Warn("failed to convert to event validation",
-			zap.Error(err),
-			zap.Int64("offset", msg.Offset),
-		)
-
-		if insertErr := p.repo.InsertBonusEventWithError(
-			ctx,
-			p.env,
-			msg.Topic,
-			msg.Partition,
-			msg.Offset,
-			msg.Value,
-			err.Error(),
-		); insertErr != nil {
-			p.errorCount.Add(1)
-			return fmt.Errorf("failed to insert validation error event: %w", insertErr)
-		}
-
-		return nil
+		return p.handleSchemaError(ctx, msg, fmt.Sprintf("validation conversion failed: %v", err))
 	}
 
-	if err := p.processEventWithSequence(ctx, event); err != nil {
-		p.errorCount.Add(1)
-		return fmt.Errorf("failed to process event with sequence: %w", err)
-	}
-
-	return nil
+	// Стадия 3-6: Обработка события с проверкой последовательности
+	return p.processEventWithSequence(ctx, event)
 }
 
-func (p *Processor) processEventWithSequence(ctx context.Context, event *models.BonusEventValidation) error {
+// handleSchemaError обрабатывает ошибки схемы/парсинга
+func (p *Processor) handleSchemaError(ctx context.Context, msg *kafka.Message, schemaError string) ProcessingResult {
+	p.logger.Warn("schema validation failed",
+		zap.String("error", schemaError),
+		zap.String("env", p.env),
+		zap.String("topic", msg.Topic),
+		zap.Int("partition", msg.Partition),
+		zap.Int64("offset", msg.Offset),
+	)
+
+	insertedID, err := p.repo.InsertBonusEventWithError(
+		ctx,
+		p.env,
+		msg.Topic,
+		msg.Partition,
+		msg.Offset,
+		msg.Value,
+		schemaError,
+	)
+
+	if err != nil {
+		p.errorCount.Add(1)
+		p.logger.Error("failed to insert schema error event",
+			zap.Error(err),
+			zap.String("env", p.env),
+			zap.Int64("offset", msg.Offset),
+		)
+		return ProcessingResult{
+			Type:    ResultInfraError,
+			Message: "failed to insert schema error",
+			Err:     err,
+		}
+	}
+
+	if insertedID == 0 {
+		// Технический дубль offset
+		return ProcessingResult{
+			Type:    ResultDuplicateOffset,
+			Message: "duplicate offset (schema error already recorded)",
+		}
+	}
+
+	// Успешно записано как domain error
+	return ProcessingResult{
+		Type:    ResultDomainError,
+		Message: fmt.Sprintf("schema_error: %s", schemaError),
+	}
+}
+
+func (p *Processor) processEventWithSequence(ctx context.Context, event *models.BonusEventValidation) ProcessingResult {
+	// Стадия 3-6: Обработка с транзакцией
 	tx, err := p.db.BeginTx(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		p.errorCount.Add(1)
+		p.logger.Error("failed to begin transaction",
+			zap.Error(err),
+			zap.String("env", p.env),
+			zap.String("seq_key", event.SeqKey.String()),
+			zap.Int64("offset", event.KafkaOffset),
+		)
+		return ProcessingResult{
+			Type:    ResultInfraError,
+			Message: "failed to begin transaction",
+			Err:     err,
+		}
 	}
 	defer tx.Rollback()
 
 	txRepo := database.NewTxRepository(tx, p.logger)
 
+	// Стадия 3: Загрузка предыдущего состояния и проверка последовательности
 	seqKey := event.SeqKey.String()
 	prevState, err := txRepo.GetSequenceStateForUpdate(ctx, p.env, seqKey)
 	if err != nil && err != sql.ErrNoRows {
-		return fmt.Errorf("failed to get sequence state: %w", err)
+		p.errorCount.Add(1)
+		p.logger.Error("failed to get sequence state",
+			zap.Error(err),
+			zap.String("env", p.env),
+			zap.String("seq_key", seqKey),
+			zap.Int64("offset", event.KafkaOffset),
+		)
+		return ProcessingResult{
+			Type:    ResultInfraError,
+			Message: "failed to get sequence state",
+			Err:     err,
+		}
 	}
 
+	// Заполняем Prev* поля и проверяем последовательность
+	isDomainError := false
 	if prevState != nil {
 		event.PrevEventType = prevState.LastEventType
 		event.PrevPlayerBonusStatus = prevState.LastPlayerBonusStatus
@@ -135,20 +194,53 @@ func (p *Processor) processEventWithSequence(ctx context.Context, event *models.
 		event.SequenceOK = sequenceOK
 		if sequenceReason != "" {
 			event.SequenceReason = sql.NullString{String: sequenceReason, Valid: true}
+			isDomainError = true
 		}
 	} else {
 		event.SequenceOK = true
 	}
 
+	// Стадия 4: Запись в bonus_events_validation
 	insertedID, err := txRepo.InsertBonusEvent(ctx, event)
 	if err != nil {
-		return fmt.Errorf("failed to insert bonus event: %w", err)
+		p.errorCount.Add(1)
+		p.logger.Error("failed to insert bonus event",
+			zap.Error(err),
+			zap.String("env", p.env),
+			zap.String("seq_key", seqKey),
+			zap.Int64("offset", event.KafkaOffset),
+		)
+		return ProcessingResult{
+			Type:    ResultInfraError,
+			Message: "failed to insert bonus event",
+			Err:     err,
+		}
 	}
 
+	// Стадия 5: Обновление snapshot в bonus_sequence_state
 	if insertedID == 0 {
-		return tx.Commit()
+		// Технический дубль offset - не обновляем bonus_sequence_state
+		if err := tx.Commit(); err != nil {
+			p.errorCount.Add(1)
+			p.logger.Error("failed to commit transaction for duplicate",
+				zap.Error(err),
+				zap.String("env", p.env),
+				zap.Int64("offset", event.KafkaOffset),
+			)
+			return ProcessingResult{
+				Type:    ResultInfraError,
+				Message: "failed to commit transaction for duplicate",
+				Err:     err,
+			}
+		}
+
+		return ProcessingResult{
+			Type:    ResultDuplicateOffset,
+			Message: "duplicate offset",
+		}
 	}
 
+	// Новая запись - обновляем snapshot
 	eventTS := event.ProcessedAt
 	if event.EventTS.Valid {
 		eventTS = event.EventTS.Time
@@ -170,14 +262,48 @@ func (p *Processor) processEventWithSequence(ctx context.Context, event *models.
 	}
 
 	if err := txRepo.UpsertSequenceState(ctx, newState); err != nil {
-		return fmt.Errorf("failed to upsert sequence state: %w", err)
+		p.errorCount.Add(1)
+		p.logger.Error("failed to upsert sequence state",
+			zap.Error(err),
+			zap.String("env", p.env),
+			zap.String("seq_key", seqKey),
+			zap.Int64("offset", event.KafkaOffset),
+		)
+		return ProcessingResult{
+			Type:    ResultInfraError,
+			Message: "failed to upsert sequence state",
+			Err:     err,
+		}
 	}
 
+	// Стадия 6: Коммит транзакции
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
+		p.errorCount.Add(1)
+		p.logger.Error("failed to commit transaction",
+			zap.Error(err),
+			zap.String("env", p.env),
+			zap.String("seq_key", seqKey),
+			zap.Int64("offset", event.KafkaOffset),
+		)
+		return ProcessingResult{
+			Type:    ResultInfraError,
+			Message: "failed to commit transaction",
+			Err:     err,
+		}
 	}
 
-	return nil
+	// Определяем итоговый результат
+	if isDomainError {
+		return ProcessingResult{
+			Type:    ResultDomainError,
+			Message: fmt.Sprintf("sequence_error: %s", event.SequenceReason.String),
+		}
+	}
+
+	return ProcessingResult{
+		Type:    ResultOK,
+		Message: "event processed successfully",
+	}
 }
 
 func (p *Processor) checkSequence(event *models.BonusEventValidation, prevState *models.BonusSequenceState) (bool, string) {
