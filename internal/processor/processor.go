@@ -3,6 +3,7 @@ package processor
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"AI-validator/internal/database"
 	"AI-validator/internal/kafka"
@@ -15,7 +16,7 @@ type Processor struct {
 	env        string
 	repo       *database.Repository
 	logger     *zap.Logger
-	errorCount int64
+	errorCount atomic.Int64
 }
 
 func New(env string, repo *database.Repository, logger *zap.Logger) *Processor {
@@ -51,14 +52,18 @@ func (p *Processor) ProcessMessage(ctx context.Context, msg *kafka.Message) erro
 			msg.Value,
 			err.Error(),
 		); insertErr != nil {
-			p.errorCount++
+			p.errorCount.Add(1)
 			return fmt.Errorf("failed to insert error event: %w", insertErr)
 		}
 
 		return nil
 	}
 
-	if bonusMsg.Message.EventType == "bonusUpdate" {
+	supportedTypes := map[string]bool{
+		"playerBonusCreate": true,
+		"playerBonusUpdate": true,
+	}
+	if !supportedTypes[bonusMsg.Message.EventType] {
 		p.logger.Warn("unsupported eventType, skipping",
 			zap.String("event_type", bonusMsg.Message.EventType),
 			zap.String("topic", msg.Topic),
@@ -83,7 +88,7 @@ func (p *Processor) ProcessMessage(ctx context.Context, msg *kafka.Message) erro
 			msg.Value,
 			err.Error(),
 		); insertErr != nil {
-			p.errorCount++
+			p.errorCount.Add(1)
 			return fmt.Errorf("failed to insert validation error event: %w", insertErr)
 		}
 
@@ -91,7 +96,7 @@ func (p *Processor) ProcessMessage(ctx context.Context, msg *kafka.Message) erro
 	}
 
 	if err := p.repo.InsertBonusEvent(ctx, event); err != nil {
-		p.errorCount++
+		p.errorCount.Add(1)
 		return fmt.Errorf("failed to insert bonus event: %w", err)
 	}
 
@@ -99,5 +104,5 @@ func (p *Processor) ProcessMessage(ctx context.Context, msg *kafka.Message) erro
 }
 
 func (p *Processor) GetErrorCount() int64 {
-	return p.errorCount
+	return p.errorCount.Load()
 }

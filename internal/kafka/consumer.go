@@ -35,14 +35,13 @@ func NewConsumer(brokers []string, topic, groupID string, logger *zap.Logger) (*
 	}
 
 	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:        brokers,
-		Topic:          topic,
-		GroupID:        groupID,
-		MinBytes:       1,          // 1 byte
-		MaxBytes:       10e6,       // 10MB
-		CommitInterval: time.Second, // Auto-commit every second
-		StartOffset:    kafka.LastOffset,
-		Logger:         kafka.LoggerFunc(func(msg string, args ...interface{}) {
+		Brokers:     brokers,
+		Topic:       topic,
+		GroupID:     groupID,
+		MinBytes:    1,    // 1 byte
+		MaxBytes:    10e6, // 10MB
+		StartOffset: kafka.LastOffset,
+		Logger: kafka.LoggerFunc(func(msg string, args ...interface{}) {
 			logger.Debug(fmt.Sprintf(msg, args...))
 		}),
 		ErrorLogger: kafka.LoggerFunc(func(msg string, args ...interface{}) {

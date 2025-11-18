@@ -6,7 +6,7 @@ import (
 
 	"AI-validator/internal/models"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
 	"go.uber.org/zap"
 )
 
@@ -52,11 +52,11 @@ func (r *Repository) InsertBonusEvent(ctx context.Context, event *models.BonusEv
 
 	result, err := r.db.conn.NamedExecContext(ctx, query, event)
 	if err != nil {
-		if pqErr, ok := err.(*pq.Error); ok {
+		if pgErr, ok := err.(*pgconn.PgError); ok {
 			r.logger.Error("postgres error",
-				zap.String("code", string(pqErr.Code)),
-				zap.String("message", pqErr.Message),
-				zap.String("detail", pqErr.Detail),
+				zap.String("code", pgErr.Code),
+				zap.String("message", pgErr.Message),
+				zap.String("detail", pgErr.Detail),
 			)
 		}
 		return fmt.Errorf("failed to insert bonus event: %w", err)
