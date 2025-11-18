@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ai-validator-postgres
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: ai_validator
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d ai_validator"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Note: Kafka removed - using production Kafka cluster
+  # Configure production Kafka brokers in config.yaml
+
+volumes:
+  postgres_data:
