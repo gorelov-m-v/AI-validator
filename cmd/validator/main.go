@@ -66,7 +66,7 @@ func main() {
 	}
 	defer consumer.Close()
 
-	proc := processor.New(cfg.Env, repo, logger)
+	proc := processor.New(cfg.Env, db, repo, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

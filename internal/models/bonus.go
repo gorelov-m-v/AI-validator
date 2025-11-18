@@ -95,6 +95,21 @@ func ParseBonusMessage(data []byte) (*BonusMessage, error) {
 	return &msg, nil
 }
 
+type BonusSequenceState struct {
+	Env                   string              `db:"env"`
+	SeqKey                uuid.UUID           `db:"seq_key"`
+	LastEventTS           time.Time           `db:"last_event_ts"`
+	LastKafkaTopic        string              `db:"last_kafka_topic"`
+	LastKafkaPartition    int                 `db:"last_kafka_partition"`
+	LastKafkaOffset       int64               `db:"last_kafka_offset"`
+	LastEventType         sql.NullString      `db:"last_event_type"`
+	LastPlayerBonusStatus sql.NullInt32       `db:"last_player_bonus_status"`
+	LastBalance           decimal.NullDecimal `db:"last_balance"`
+	LastWager             decimal.NullDecimal `db:"last_wager"`
+	LastTotalWager        decimal.NullDecimal `db:"last_total_wager"`
+	LastValidationID      sql.NullInt64       `db:"last_validation_id"`
+}
+
 func (bm *BonusMessage) ToEventValidation(env, topic string, partition int, offset int64, rawJSON []byte) (*BonusEventValidation, error) {
 	ev := &BonusEventValidation{
 		Env:            env,

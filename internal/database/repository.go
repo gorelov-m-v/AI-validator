@@ -7,6 +7,7 @@ import (
 	"AI-validator/internal/models"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jmoiron/sqlx"
 	"go.uber.org/zap"
 )
 
@@ -22,7 +23,7 @@ func NewRepository(db *DB, logger *zap.Logger) *Repository {
 	}
 }
 
-func (r *Repository) InsertBonusEvent(ctx context.Context, event *models.BonusEventValidation) error {
+func (r *Repository) InsertBonusEvent(ctx context.Context, event *models.BonusEventValidation) (int64, error) {
 	query := `
 		INSERT INTO bonus_events_validation (
 			env, kafka_topic, kafka_partition, kafka_offset,
@@ -32,8 +33,10 @@ func (r *Repository) InsertBonusEvent(ctx context.Context, event *models.BonusEv
 			received_balance, balance, wager, total_wager,
 			player_bonus_status, expired_at,
 			created_at, updated_at, is_wager,
+			prev_event_type, prev_player_bonus_status, prev_balance, prev_wager, prev_total_wager,
+			prev_event_ts, prev_kafka_offset,
 			schema_ok, schema_error,
-			sequence_ok,
+			sequence_ok, sequence_reason,
 			raw_message
 		) VALUES (
 			:env, :kafka_topic, :kafka_partition, :kafka_offset,
@@ -43,14 +46,17 @@ func (r *Repository) InsertBonusEvent(ctx context.Context, event *models.BonusEv
 			:received_balance, :balance, :wager, :total_wager,
 			:player_bonus_status, :expired_at,
 			:created_at, :updated_at, :is_wager,
+			:prev_event_type, :prev_player_bonus_status, :prev_balance, :prev_wager, :prev_total_wager,
+			:prev_event_ts, :prev_kafka_offset,
 			:schema_ok, :schema_error,
-			:sequence_ok,
+			:sequence_ok, :sequence_reason,
 			:raw_message
 		)
 		ON CONFLICT (env, kafka_topic, kafka_partition, kafka_offset) DO NOTHING
+		RETURNING id
 	`
 
-	result, err := r.db.conn.NamedExecContext(ctx, query, event)
+	rows, err := r.db.conn.NamedQueryContext(ctx, query, event)
 	if err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok {
 			r.logger.Error("postgres error",
@@ -59,31 +65,35 @@ func (r *Repository) InsertBonusEvent(ctx context.Context, event *models.BonusEv
 				zap.String("detail", pgErr.Detail),
 			)
 		}
-		return fmt.Errorf("failed to insert bonus event: %w", err)
+		return 0, fmt.Errorf("failed to insert bonus event: %w", err)
 	}
+	defer rows.Close()
 
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
+	var insertedID int64
+	if rows.Next() {
+		if err := rows.Scan(&insertedID); err != nil {
+			return 0, fmt.Errorf("failed to scan inserted ID: %w", err)
+		}
 
-	if rowsAffected == 0 {
-		r.logger.Debug("duplicate event skipped",
-			zap.String("env", event.Env),
-			zap.String("topic", event.KafkaTopic),
-			zap.Int("partition", event.KafkaPartition),
-			zap.Int64("offset", event.KafkaOffset),
-		)
-	} else {
 		r.logger.Debug("event inserted",
 			zap.String("env", event.Env),
 			zap.String("seq_key", event.SeqKey.String()),
 			zap.String("event_type", event.EventType),
 			zap.Int64("offset", event.KafkaOffset),
+			zap.Int64("id", insertedID),
 		)
+
+		return insertedID, nil
 	}
 
-	return nil
+	r.logger.Debug("duplicate event skipped",
+		zap.String("env", event.Env),
+		zap.String("topic", event.KafkaTopic),
+		zap.Int("partition", event.KafkaPartition),
+		zap.Int64("offset", event.KafkaOffset),
+	)
+
+	return 0, nil
 }
 
 func (r *Repository) InsertBonusEventWithError(ctx context.Context, env, topic string, partition int, offset int64, rawJSON []byte, schemaError string) error {
@@ -123,6 +133,199 @@ func (r *Repository) InsertBonusEventWithError(ctx context.Context, env, topic s
 		zap.Int64("offset", offset),
 		zap.String("error", schemaError),
 	)
+
+	return nil
+}
+
+func (r *Repository) GetSequenceStateForUpdate(ctx context.Context, env string, seqKey string) (*models.BonusSequenceState, error) {
+	query := `
+		SELECT env, seq_key, last_event_ts, last_kafka_topic, last_kafka_partition, last_kafka_offset,
+		       last_event_type, last_player_bonus_status, last_balance, last_wager, last_total_wager,
+		       last_validation_id
+		FROM bonus_sequence_state
+		WHERE env = $1 AND seq_key = $2
+		FOR UPDATE
+	`
+
+	var state models.BonusSequenceState
+	err := r.db.conn.GetContext(ctx, &state, query, env, seqKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return &state, nil
+}
+
+func (r *Repository) UpsertSequenceState(ctx context.Context, state *models.BonusSequenceState) error {
+	query := `
+		INSERT INTO bonus_sequence_state (
+			env, seq_key, last_event_ts, last_kafka_topic, last_kafka_partition, last_kafka_offset,
+			last_event_type, last_player_bonus_status, last_balance, last_wager, last_total_wager,
+			last_validation_id
+		) VALUES (
+			:env, :seq_key, :last_event_ts, :last_kafka_topic, :last_kafka_partition, :last_kafka_offset,
+			:last_event_type, :last_player_bonus_status, :last_balance, :last_wager, :last_total_wager,
+			:last_validation_id
+		)
+		ON CONFLICT (env, seq_key) DO UPDATE SET
+			last_event_ts = EXCLUDED.last_event_ts,
+			last_kafka_topic = EXCLUDED.last_kafka_topic,
+			last_kafka_partition = EXCLUDED.last_kafka_partition,
+			last_kafka_offset = EXCLUDED.last_kafka_offset,
+			last_event_type = EXCLUDED.last_event_type,
+			last_player_bonus_status = EXCLUDED.last_player_bonus_status,
+			last_balance = EXCLUDED.last_balance,
+			last_wager = EXCLUDED.last_wager,
+			last_total_wager = EXCLUDED.last_total_wager,
+			last_validation_id = EXCLUDED.last_validation_id
+	`
+
+	_, err := r.db.conn.NamedExecContext(ctx, query, state)
+	if err != nil {
+		return fmt.Errorf("failed to upsert sequence state: %w", err)
+	}
+
+	return nil
+}
+
+type TxRepository struct {
+	tx     *sqlx.Tx
+	logger *zap.Logger
+}
+
+func NewTxRepository(tx *sqlx.Tx, logger *zap.Logger) *TxRepository {
+	return &TxRepository{
+		tx:     tx,
+		logger: logger,
+	}
+}
+
+func (r *TxRepository) GetSequenceStateForUpdate(ctx context.Context, env string, seqKey string) (*models.BonusSequenceState, error) {
+	query := `
+		SELECT env, seq_key, last_event_ts, last_kafka_topic, last_kafka_partition, last_kafka_offset,
+		       last_event_type, last_player_bonus_status, last_balance, last_wager, last_total_wager,
+		       last_validation_id
+		FROM bonus_sequence_state
+		WHERE env = $1 AND seq_key = $2
+		FOR UPDATE
+	`
+
+	var state models.BonusSequenceState
+	err := r.tx.GetContext(ctx, &state, query, env, seqKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return &state, nil
+}
+
+func (r *TxRepository) InsertBonusEvent(ctx context.Context, event *models.BonusEventValidation) (int64, error) {
+	query := `
+		INSERT INTO bonus_events_validation (
+			env, kafka_topic, kafka_partition, kafka_offset,
+			processed_at, event_ts,
+			seq_key, player_id, node_id, bonus_id,
+			event_type, bonus_category, currency,
+			received_balance, balance, wager, total_wager,
+			player_bonus_status, expired_at,
+			created_at, updated_at, is_wager,
+			prev_event_type, prev_player_bonus_status, prev_balance, prev_wager, prev_total_wager,
+			prev_event_ts, prev_kafka_offset,
+			schema_ok, schema_error,
+			sequence_ok, sequence_reason,
+			raw_message
+		) VALUES (
+			:env, :kafka_topic, :kafka_partition, :kafka_offset,
+			:processed_at, :event_ts,
+			:seq_key, :player_id, :node_id, :bonus_id,
+			:event_type, :bonus_category, :currency,
+			:received_balance, :balance, :wager, :total_wager,
+			:player_bonus_status, :expired_at,
+			:created_at, :updated_at, :is_wager,
+			:prev_event_type, :prev_player_bonus_status, :prev_balance, :prev_wager, :prev_total_wager,
+			:prev_event_ts, :prev_kafka_offset,
+			:schema_ok, :schema_error,
+			:sequence_ok, :sequence_reason,
+			:raw_message
+		)
+		ON CONFLICT (env, kafka_topic, kafka_partition, kafka_offset) DO NOTHING
+		RETURNING id
+	`
+
+	stmt, err := r.tx.PrepareNamedContext(ctx, query)
+	if err != nil {
+		return 0, fmt.Errorf("failed to prepare statement: %w", err)
+	}
+	defer stmt.Close()
+
+	rows, err := stmt.QueryxContext(ctx, event)
+	if err != nil {
+		if pgErr, ok := err.(*pgconn.PgError); ok {
+			r.logger.Error("postgres error",
+				zap.String("code", pgErr.Code),
+				zap.String("message", pgErr.Message),
+				zap.String("detail", pgErr.Detail),
+			)
+		}
+		return 0, fmt.Errorf("failed to insert bonus event: %w", err)
+	}
+	defer rows.Close()
+
+	var insertedID int64
+	if rows.Next() {
+		if err := rows.Scan(&insertedID); err != nil {
+			return 0, fmt.Errorf("failed to scan inserted ID: %w", err)
+		}
+
+		r.logger.Debug("event inserted",
+			zap.String("env", event.Env),
+			zap.String("seq_key", event.SeqKey.String()),
+			zap.String("event_type", event.EventType),
+			zap.Int64("offset", event.KafkaOffset),
+			zap.Int64("id", insertedID),
+		)
+
+		return insertedID, nil
+	}
+
+	r.logger.Debug("duplicate event skipped",
+		zap.String("env", event.Env),
+		zap.String("topic", event.KafkaTopic),
+		zap.Int("partition", event.KafkaPartition),
+		zap.Int64("offset", event.KafkaOffset),
+	)
+
+	return 0, nil
+}
+
+func (r *TxRepository) UpsertSequenceState(ctx context.Context, state *models.BonusSequenceState) error {
+	query := `
+		INSERT INTO bonus_sequence_state (
+			env, seq_key, last_event_ts, last_kafka_topic, last_kafka_partition, last_kafka_offset,
+			last_event_type, last_player_bonus_status, last_balance, last_wager, last_total_wager,
+			last_validation_id
+		) VALUES (
+			:env, :seq_key, :last_event_ts, :last_kafka_topic, :last_kafka_partition, :last_kafka_offset,
+			:last_event_type, :last_player_bonus_status, :last_balance, :last_wager, :last_total_wager,
+			:last_validation_id
+		)
+		ON CONFLICT (env, seq_key) DO UPDATE SET
+			last_event_ts = EXCLUDED.last_event_ts,
+			last_kafka_topic = EXCLUDED.last_kafka_topic,
+			last_kafka_partition = EXCLUDED.last_kafka_partition,
+			last_kafka_offset = EXCLUDED.last_kafka_offset,
+			last_event_type = EXCLUDED.last_event_type,
+			last_player_bonus_status = EXCLUDED.last_player_bonus_status,
+			last_balance = EXCLUDED.last_balance,
+			last_wager = EXCLUDED.last_wager,
+			last_total_wager = EXCLUDED.last_total_wager,
+			last_validation_id = EXCLUDED.last_validation_id
+	`
+
+	_, err := r.tx.NamedExecContext(ctx, query, state)
+	if err != nil {
+		return fmt.Errorf("failed to upsert sequence state: %w", err)
+	}
 
 	return nil
 }

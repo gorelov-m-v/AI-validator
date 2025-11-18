@@ -48,3 +48,7 @@ func (db *DB) Close() error {
 func (db *DB) GetConn() *sqlx.DB {
 	return db.conn
 }
+
+func (db *DB) BeginTx(ctx context.Context) (*sqlx.Tx, error) {
+	return db.conn.BeginTxx(ctx, nil)
+}
