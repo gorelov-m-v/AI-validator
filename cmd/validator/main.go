@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"net/http"
 	"os"
 	"os/signal"
 	"sync/atomic"
@@ -87,8 +86,6 @@ func main() {
 
 	bonusInfoProcessor := processor.New(cfg.Env, db, repo, logger)
 	playerBonusProcessor := processor.NewPlayerBonusProcessor(cfg.Env, repo, logger)
-
-	go startHealthCheckServer(db, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -338,41 +335,4 @@ func initLogger(logLevel string) (*zap.Logger, error) {
 	config.Level = zap.NewAtomicLevelAt(level)
 
 	return config.Build()
-}
-
-func startHealthCheckServer(db *database.DB, logger *zap.Logger) {
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-
-		if err := db.Ping(); err != nil {
-			logger.Error("health check failed: database ping error", zap.Error(err))
-			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte(`{"status":"unhealthy","error":"database connection failed"}`))
-			return
-		}
-
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"healthy","database":"ok","kafka":"connected"}`))
-	})
-
-	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ready"}`))
-	})
-
-	server := &http.Server{
-		Addr:         ":8080",
-		Handler:      mux,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 5 * time.Second,
-	}
-
-	logger.Info("starting health check server", zap.String("addr", ":8080"))
-
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		logger.Error("health check server error", zap.Error(err))
-	}
 }

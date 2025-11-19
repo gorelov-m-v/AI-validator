@@ -29,9 +29,6 @@ COPY --from=builder /app/ai-validator .
 # Copy migrations (optional, if you want to run them from container)
 COPY --from=builder /app/migrations ./migrations
 
-# Expose health check port
-EXPOSE 8080
-
 # Run the application
 ENTRYPOINT ["./ai-validator"]
 CMD ["-config=/config/config.yaml"]

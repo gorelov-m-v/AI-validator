@@ -220,15 +220,10 @@ func (p *Processor) processEventWithSequence(ctx context.Context, event *models.
 		}
 	}
 
-	eventTS := event.ProcessedAt
-	if event.EventTS.Valid {
-		eventTS = event.EventTS.Time
-	}
-
 	newState := &models.BonusSequenceState{
 		Env:                   p.env,
 		SeqKey:                event.SeqKey,
-		LastEventTS:           eventTS,
+		LastEventTS:           event.ProcessedAt,
 		LastKafkaTopic:        event.KafkaTopic,
 		LastKafkaPartition:    event.KafkaPartition,
 		LastKafkaOffset:       event.KafkaOffset,
@@ -286,7 +281,7 @@ func (p *Processor) processEventWithSequence(ctx context.Context, event *models.
 func (p *Processor) checkSequence(event *models.BonusEventValidation, prevState *models.BonusSequenceState) (bool, string) {
 	var reasons []string
 
-	if event.EventTS.Valid {
+	if event.EventTS.Valid && prevState.LastEventTS.Before(event.ProcessedAt) {
 		if event.EventTS.Time.Before(prevState.LastEventTS) {
 			reasons = append(reasons, "event_ts moved backwards")
 		}

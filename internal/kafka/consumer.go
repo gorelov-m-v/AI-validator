@@ -107,8 +107,14 @@ func (c *Consumer) ReadBatch(ctx context.Context, maxBatch int, maxWait time.Dur
 		cancel()
 
 		if err != nil {
-			// Timeout or context cancelled - return what we have
-			break
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				break
+			}
+			c.logger.Error("failed to fetch message in batch after first message",
+				zap.Error(err),
+				zap.Int("batch_size", len(batch)),
+			)
+			return batch, fmt.Errorf("failed to fetch message in batch: %w", err)
 		}
 
 		batch = append(batch, &Message{
