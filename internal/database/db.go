@@ -45,6 +45,12 @@ func (db *DB) Close() error {
 	return db.conn.Close()
 }
 
+func (db *DB) Ping() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return db.conn.PingContext(ctx)
+}
+
 func (db *DB) GetConn() *sqlx.DB {
 	return db.conn
 }

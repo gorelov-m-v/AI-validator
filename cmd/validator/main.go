@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync/atomic"
@@ -70,6 +71,8 @@ func main() {
 
 	proc := processor.New(cfg.Env, db, repo, logger)
 
+	go startHealthCheckServer(db, logger)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -107,7 +110,7 @@ func main() {
 						zap.Int("max_batch_size", cfg.Kafka.BatchSize),
 						zap.Duration("max_wait", batchMaxWait),
 					)
-					time.Sleep(time.Second) // Backoff on error
+					time.Sleep(time.Second)
 					continue
 				}
 
@@ -119,10 +122,9 @@ func main() {
 					zap.Int("batch_size", len(batch)),
 				)
 
-				// Состояние обработки по партициям
 				type partitionState struct {
 					hasInfraError bool
-					lastMessage   *kafka.Message // последнее успешно обработанное сообщение
+					lastMessage   *kafka.Message
 					messagesCount int
 				}
 				partitionStates := make(map[int]*partitionState)
@@ -136,7 +138,6 @@ func main() {
 						partitionStates[msg.Partition] = state
 					}
 
-					// Если по партиции уже была infra error, пропускаем дальнейшие сообщения
 					if state.hasInfraError {
 						logger.Debug("skipping message due to previous infra error in partition",
 							zap.Int("partition", msg.Partition),
@@ -145,10 +146,8 @@ func main() {
 						continue
 					}
 
-					// Обработка сообщения
 					result := proc.ProcessMessage(ctx, msg)
 
-					// Логирование результата обработки
 					switch result.Type {
 					case processor.ResultOK:
 						logger.Debug("message processed successfully",
@@ -195,14 +194,9 @@ func main() {
 						)
 						infraErrorCount++
 						state.hasInfraError = true
-						// lastMessage остаётся указывать на последнее успешно обработанное
 					}
 				}
 
-				// Подготовка списка для коммита (один offset на партицию)
-				// Коммитим lastMessage независимо от hasInfraError:
-				// - если infra error на первом сообщении: lastMessage == nil, ничего не коммитим
-				// - если были успешные, потом infra error: коммитим последний успешный
 				messagesToCommit := make([]*kafka.Message, 0, len(partitionStates))
 				for _, state := range partitionStates {
 					if state.lastMessage != nil {
@@ -273,4 +267,41 @@ func initLogger(logLevel string) (*zap.Logger, error) {
 	config.Level = zap.NewAtomicLevelAt(level)
 
 	return config.Build()
+}
+
+func startHealthCheckServer(db *database.DB, logger *zap.Logger) {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		if err := db.Ping(); err != nil {
+			logger.Error("health check failed: database ping error", zap.Error(err))
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte(`{"status":"unhealthy","error":"database connection failed"}`))
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"healthy","database":"ok","kafka":"connected"}`))
+	})
+
+	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ready"}`))
+	})
+
+	server := &http.Server{
+		Addr:         ":8080",
+		Handler:      mux,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 5 * time.Second,
+	}
+
+	logger.Info("starting health check server", zap.String("addr", ":8080"))
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.Error("health check server error", zap.Error(err))
+	}
 }

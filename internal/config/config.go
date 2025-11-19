@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/viper"
 )
@@ -36,6 +37,11 @@ func Load(configPath string) (*Config, error) {
 	var cfg Config
 	if err := viper.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+	}
+
+	// Override DSN from environment variable if present
+	if envDSN := os.Getenv("DB_DSN"); envDSN != "" {
+		cfg.DB.DSN = envDSN
 	}
 
 	if err := cfg.Validate(); err != nil {

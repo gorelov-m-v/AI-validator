@@ -17,9 +17,28 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
-  # Note: Kafka removed - using production Kafka cluster
-  # Configure production Kafka brokers in config.yaml
+  ai-validator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-validator-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
+    restart: unless-stopped
+    environment:
+      - TZ=UTC
+      - DB_DSN=postgres://user:pass@postgres:5432/ai_validator?sslmode=disable
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 volumes:
   postgres_data:

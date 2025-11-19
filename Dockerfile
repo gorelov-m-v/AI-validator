@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25.4-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git make
@@ -29,7 +29,8 @@ COPY --from=builder /app/ai-validator .
 # Copy migrations (optional, if you want to run them from container)
 COPY --from=builder /app/migrations ./migrations
 
-# Expose no ports (this is a consumer service)
+# Expose health check port
+EXPOSE 8080
 
 # Run the application
 ENTRYPOINT ["./ai-validator"]
