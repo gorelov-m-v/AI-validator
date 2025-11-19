@@ -82,7 +82,6 @@ func (c *Consumer) ReadBatch(ctx context.Context, maxBatch int, maxWait time.Dur
 	batch := make([]*Message, 0, maxBatch)
 	startTime := time.Now()
 
-	// Read first message (blocking)
 	firstMsg, err := c.reader.FetchMessage(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch first message: %w", err)
@@ -97,7 +96,6 @@ func (c *Consumer) ReadBatch(ctx context.Context, maxBatch int, maxWait time.Dur
 		Time:      firstMsg.Time,
 	})
 
-	// Try to fill the batch up to maxBatch or maxWait
 	for len(batch) < maxBatch {
 		elapsed := time.Since(startTime)
 		if elapsed >= maxWait {
@@ -148,7 +146,6 @@ func (c *Consumer) CommitBatch(ctx context.Context, messages []*Message) error {
 		return nil
 	}
 
-	// Group messages by partition to get the last offset for each
 	lastByPartition := make(map[int]*Message)
 	for _, msg := range messages {
 		if existing, ok := lastByPartition[msg.Partition]; !ok || msg.Offset > existing.Offset {
@@ -156,7 +153,6 @@ func (c *Consumer) CommitBatch(ctx context.Context, messages []*Message) error {
 		}
 	}
 
-	// Prepare messages for commit
 	toCommit := make([]kafka.Message, 0, len(lastByPartition))
 	for _, msg := range lastByPartition {
 		toCommit = append(toCommit, kafka.Message{

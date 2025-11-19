@@ -12,7 +12,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// PlayerBonusProcessor handles messages from bonus.v1.playerBonus topic
 type PlayerBonusProcessor struct {
 	env        string
 	repo       *database.Repository
@@ -36,13 +35,11 @@ func (p *PlayerBonusProcessor) ProcessMessage(ctx context.Context, msg *kafka.Me
 		zap.String("key", string(msg.Key)),
 	)
 
-	// Stage 1: Parse and validate schema
 	playerBonusMsg, err := models.ParsePlayerBonusMessage(msg.Value)
 	if err != nil {
 		return p.handleSchemaError(ctx, msg, fmt.Sprintf("JSON parsing failed: %v", err))
 	}
 
-	// Check for required fields
 	if playerBonusMsg.Message.EventType == "" {
 		return p.handleSchemaError(ctx, msg, "missing message.event_type")
 	}
@@ -59,13 +56,11 @@ func (p *PlayerBonusProcessor) ProcessMessage(ctx context.Context, msg *kafka.Me
 		return p.handleSchemaError(ctx, msg, "missing player_bonus.node")
 	}
 
-	// Stage 2: Convert to database model
 	event, err := playerBonusMsg.ToPlayerBonusEvent(p.env, msg.Topic, msg.Partition, msg.Offset, msg.Value)
 	if err != nil {
 		return p.handleSchemaError(ctx, msg, fmt.Sprintf("validation conversion failed: %v", err))
 	}
 
-	// Stage 3: Insert into database
 	insertedID, err := p.repo.InsertPlayerBonusEvent(ctx, event)
 	if err != nil {
 		p.errorCount.Add(1)
@@ -83,21 +78,18 @@ func (p *PlayerBonusProcessor) ProcessMessage(ctx context.Context, msg *kafka.Me
 	}
 
 	if insertedID == 0 {
-		// Technical duplicate by offset
 		return ProcessingResult{
 			Type:    ResultDuplicateOffset,
 			Message: "duplicate offset",
 		}
 	}
 
-	// Success
 	return ProcessingResult{
 		Type:    ResultOK,
 		Message: "player bonus event processed successfully",
 	}
 }
 
-// handleSchemaError processes schema/parsing errors
 func (p *PlayerBonusProcessor) handleSchemaError(ctx context.Context, msg *kafka.Message, schemaError string) ProcessingResult {
 	p.logger.Warn("player bonus schema validation failed",
 		zap.String("error", schemaError),
@@ -132,14 +124,12 @@ func (p *PlayerBonusProcessor) handleSchemaError(ctx context.Context, msg *kafka
 	}
 
 	if insertedID == 0 {
-		// Technical duplicate by offset
 		return ProcessingResult{
 			Type:    ResultDuplicateOffset,
 			Message: "duplicate offset (schema error already recorded)",
 		}
 	}
 
-	// Successfully recorded as domain error
 	return ProcessingResult{
 		Type:    ResultDomainError,
 		Message: fmt.Sprintf("schema_error: %s", schemaError),

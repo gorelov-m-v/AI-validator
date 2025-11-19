@@ -211,7 +211,6 @@ func (bm *BonusMessage) ToEventValidation(env, topic string, partition int, offs
 	return ev, nil
 }
 
-// PlayerBonusMessage represents the bonus.v1.playerBonus topic message
 type PlayerBonusMessage struct {
 	Message struct {
 		EventType string `json:"event_type"`
@@ -235,7 +234,6 @@ type PlayerBonusMessage struct {
 	} `json:"player_bonus"`
 }
 
-// PlayerBonusEvent represents the bonus_player_bonus_events table
 type PlayerBonusEvent struct {
 	ID             int64  `db:"id"`
 	Env            string `db:"env"`

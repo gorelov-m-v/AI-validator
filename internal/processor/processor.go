@@ -14,21 +14,15 @@ import (
 	"go.uber.org/zap"
 )
 
-// ProcessingResultType классифицирует результат обработки сообщения
 type ProcessingResultType int
 
 const (
-	// ResultOK - событие успешно обработано без ошибок
 	ResultOK ProcessingResultType = iota
-	// ResultDomainError - бизнес-ошибка (схема, последовательность, инварианты)
 	ResultDomainError
-	// ResultDuplicateOffset - технический дубль offset (уже обработано)
 	ResultDuplicateOffset
-	// ResultInfraError - инфраструктурная ошибка (БД, транзакции)
 	ResultInfraError
 )
 
-// ProcessingResult содержит результат обработки одного сообщения
 type ProcessingResult struct {
 	Type    ProcessingResultType
 	Message string
@@ -60,13 +54,11 @@ func (p *Processor) ProcessMessage(ctx context.Context, msg *kafka.Message) Proc
 		zap.String("key", string(msg.Key)),
 	)
 
-	// Стадия 1: Парсинг и проверка схемы
 	bonusMsg, err := models.ParseBonusMessage(msg.Value)
 	if err != nil {
 		return p.handleSchemaError(ctx, msg, fmt.Sprintf("JSON parsing failed: %v", err))
 	}
 
-	// Проверка поддерживаемых типов событий
 	supportedTypes := map[string]bool{
 		"playerBonusCreate": true,
 		"playerBonusUpdate": true,
@@ -77,21 +69,17 @@ func (p *Processor) ProcessMessage(ctx context.Context, msg *kafka.Message) Proc
 			zap.String("topic", msg.Topic),
 			zap.Int64("offset", msg.Offset),
 		)
-		// Неподдерживаемые типы пропускаем без записи
 		return ProcessingResult{Type: ResultOK, Message: "unsupported event type"}
 	}
 
-	// Стадия 2: Формирование события для валидации
 	event, err := bonusMsg.ToEventValidation(p.env, msg.Topic, msg.Partition, msg.Offset, msg.Value)
 	if err != nil {
 		return p.handleSchemaError(ctx, msg, fmt.Sprintf("validation conversion failed: %v", err))
 	}
 
-	// Стадия 3-6: Обработка события с проверкой последовательности
 	return p.processEventWithSequence(ctx, event)
 }
 
-// handleSchemaError обрабатывает ошибки схемы/парсинга
 func (p *Processor) handleSchemaError(ctx context.Context, msg *kafka.Message, schemaError string) ProcessingResult {
 	p.logger.Warn("schema validation failed",
 		zap.String("error", schemaError),
@@ -126,14 +114,12 @@ func (p *Processor) handleSchemaError(ctx context.Context, msg *kafka.Message, s
 	}
 
 	if insertedID == 0 {
-		// Технический дубль offset
 		return ProcessingResult{
 			Type:    ResultDuplicateOffset,
 			Message: "duplicate offset (schema error already recorded)",
 		}
 	}
 
-	// Успешно записано как domain error
 	return ProcessingResult{
 		Type:    ResultDomainError,
 		Message: fmt.Sprintf("schema_error: %s", schemaError),
@@ -141,7 +127,6 @@ func (p *Processor) handleSchemaError(ctx context.Context, msg *kafka.Message, s
 }
 
 func (p *Processor) processEventWithSequence(ctx context.Context, event *models.BonusEventValidation) ProcessingResult {
-	// Стадия 3-6: Обработка с транзакцией
 	tx, err := p.db.BeginTx(ctx)
 	if err != nil {
 		p.errorCount.Add(1)
@@ -161,7 +146,6 @@ func (p *Processor) processEventWithSequence(ctx context.Context, event *models.
 
 	txRepo := database.NewTxRepository(tx, p.logger)
 
-	// Стадия 3: Загрузка предыдущего состояния и проверка последовательности
 	seqKey := event.SeqKey.String()
 	prevState, err := txRepo.GetSequenceStateForUpdate(ctx, p.env, seqKey)
 	if err != nil && err != sql.ErrNoRows {
@@ -179,7 +163,6 @@ func (p *Processor) processEventWithSequence(ctx context.Context, event *models.
 		}
 	}
 
-	// Заполняем Prev* поля и проверяем последовательность
 	isDomainError := false
 	if prevState != nil {
 		event.PrevEventType = prevState.LastEventType
@@ -200,7 +183,6 @@ func (p *Processor) processEventWithSequence(ctx context.Context, event *models.
 		event.SequenceOK = true
 	}
 
-	// Стадия 4: Запись в bonus_events_validation
 	insertedID, err := txRepo.InsertBonusEvent(ctx, event)
 	if err != nil {
 		p.errorCount.Add(1)
@@ -217,9 +199,7 @@ func (p *Processor) processEventWithSequence(ctx context.Context, event *models.
 		}
 	}
 
-	// Стадия 5: Обновление snapshot в bonus_sequence_state
 	if insertedID == 0 {
-		// Технический дубль offset - не обновляем bonus_sequence_state
 		if err := tx.Commit(); err != nil {
 			p.errorCount.Add(1)
 			p.logger.Error("failed to commit transaction for duplicate",
@@ -240,7 +220,6 @@ func (p *Processor) processEventWithSequence(ctx context.Context, event *models.
 		}
 	}
 
-	// Новая запись - обновляем snapshot
 	eventTS := event.ProcessedAt
 	if event.EventTS.Valid {
 		eventTS = event.EventTS.Time
@@ -276,7 +255,6 @@ func (p *Processor) processEventWithSequence(ctx context.Context, event *models.
 		}
 	}
 
-	// Стадия 6: Коммит транзакции
 	if err := tx.Commit(); err != nil {
 		p.errorCount.Add(1)
 		p.logger.Error("failed to commit transaction",
@@ -292,7 +270,6 @@ func (p *Processor) processEventWithSequence(ctx context.Context, event *models.
 		}
 	}
 
-	// Определяем итоговый результат
 	if isDomainError {
 		return ProcessingResult{
 			Type:    ResultDomainError,
