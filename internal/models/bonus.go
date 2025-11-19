@@ -122,78 +122,132 @@ func (bm *BonusMessage) ToEventValidation(env, topic string, partition int, offs
 		RawMessage:     rawJSON,
 	}
 
+	if bm.Bonus.ID == "" {
+		return nil, fmt.Errorf("SCHEMA_MISSING_FIELD: bonus.id")
+	}
+	if bm.Bonus.NodeID == "" {
+		return nil, fmt.Errorf("SCHEMA_MISSING_FIELD: bonus.nodeId")
+	}
+	if bm.Bonus.BonusID == "" {
+		return nil, fmt.Errorf("SCHEMA_MISSING_FIELD: bonus.bonusId")
+	}
+	if bm.Bonus.PlayerID == "" {
+		return nil, fmt.Errorf("SCHEMA_MISSING_FIELD: bonus.playerId")
+	}
+	if bm.Bonus.BonusCategory == "" {
+		return nil, fmt.Errorf("SCHEMA_MISSING_FIELD: bonus.bonusCategory")
+	}
+	if bm.Bonus.Currency == "" {
+		return nil, fmt.Errorf("SCHEMA_MISSING_FIELD: bonus.currency")
+	}
+
 	seqKey, err := uuid.Parse(bm.Bonus.ID)
 	if err != nil {
-		return nil, fmt.Errorf("invalid seq_key (bonus.id): %w", err)
+		return nil, fmt.Errorf("SCHEMA_INVALID_UUID: bonus.id: %w", err)
 	}
 	ev.SeqKey = seqKey
 
 	playerID, err := uuid.Parse(bm.Bonus.PlayerID)
 	if err != nil {
-		return nil, fmt.Errorf("invalid player_id: %w", err)
+		return nil, fmt.Errorf("SCHEMA_INVALID_UUID: bonus.playerId: %w", err)
 	}
 	ev.PlayerID = playerID
 
 	nodeID, err := uuid.Parse(bm.Bonus.NodeID)
 	if err != nil {
-		return nil, fmt.Errorf("invalid node_id: %w", err)
+		return nil, fmt.Errorf("SCHEMA_INVALID_UUID: bonus.nodeId: %w", err)
 	}
 	ev.NodeID = nodeID
 
 	bonusID, err := uuid.Parse(bm.Bonus.BonusID)
 	if err != nil {
-		return nil, fmt.Errorf("invalid bonus_id: %w", err)
+		return nil, fmt.Errorf("SCHEMA_INVALID_UUID: bonus.bonusId: %w", err)
 	}
 	ev.BonusID = bonusID
 
 	ev.EventType = bm.Message.EventType
 
-	if bm.Bonus.BonusCategory != "" {
-		ev.BonusCategory = sql.NullString{String: bm.Bonus.BonusCategory, Valid: true}
+	if bm.Bonus.BonusCategory != "casino" && bm.Bonus.BonusCategory != "sport" {
+		return nil, fmt.Errorf("SCHEMA_INVALID_ENUM: bonus.bonusCategory must be 'casino' or 'sport', got: %s", bm.Bonus.BonusCategory)
 	}
-	if bm.Bonus.Currency != "" {
-		ev.Currency = sql.NullString{String: bm.Bonus.Currency, Valid: true}
-	}
+	ev.BonusCategory = sql.NullString{String: bm.Bonus.BonusCategory, Valid: true}
 
-	if bm.Bonus.ReceivedBalance != "" {
-		val, err := decimal.NewFromString(bm.Bonus.ReceivedBalance)
-		if err != nil {
-			return nil, fmt.Errorf("invalid received_balance: %w", err)
-		}
-		ev.ReceivedBalance = decimal.NullDecimal{Decimal: val, Valid: true}
-	}
+	ev.Currency = sql.NullString{String: bm.Bonus.Currency, Valid: true}
 
-	if bm.Bonus.Balance != "" {
-		val, err := decimal.NewFromString(bm.Bonus.Balance)
-		if err != nil {
-			return nil, fmt.Errorf("invalid balance: %w", err)
-		}
-		ev.Balance = decimal.NullDecimal{Decimal: val, Valid: true}
+	if bm.Bonus.ReceivedBalance == "" {
+		return nil, fmt.Errorf("SCHEMA_MISSING_FIELD: bonus.receivedBalance")
 	}
-
-	if bm.Bonus.Wager != "" {
-		val, err := decimal.NewFromString(bm.Bonus.Wager)
-		if err != nil {
-			return nil, fmt.Errorf("invalid wager: %w", err)
-		}
-		ev.Wager = decimal.NullDecimal{Decimal: val, Valid: true}
+	receivedBalance, err := decimal.NewFromString(bm.Bonus.ReceivedBalance)
+	if err != nil {
+		return nil, fmt.Errorf("SCHEMA_INVALID_DECIMAL: bonus.receivedBalance: %w", err)
 	}
-
-	if bm.Bonus.TotalWager != "" {
-		val, err := decimal.NewFromString(bm.Bonus.TotalWager)
-		if err != nil {
-			return nil, fmt.Errorf("invalid total_wager: %w", err)
-		}
-		ev.TotalWager = decimal.NullDecimal{Decimal: val, Valid: true}
+	if receivedBalance.LessThan(decimal.Zero) {
+		return nil, fmt.Errorf("SCHEMA_NEGATIVE_AMOUNT: bonus.receivedBalance must be >= 0")
 	}
+	ev.ReceivedBalance = decimal.NullDecimal{Decimal: receivedBalance, Valid: true}
 
+	if bm.Bonus.Balance == "" {
+		return nil, fmt.Errorf("SCHEMA_MISSING_FIELD: bonus.balance")
+	}
+	balance, err := decimal.NewFromString(bm.Bonus.Balance)
+	if err != nil {
+		return nil, fmt.Errorf("SCHEMA_INVALID_DECIMAL: bonus.balance: %w", err)
+	}
+	if balance.LessThan(decimal.Zero) {
+		return nil, fmt.Errorf("SCHEMA_NEGATIVE_AMOUNT: bonus.balance must be >= 0")
+	}
+	ev.Balance = decimal.NullDecimal{Decimal: balance, Valid: true}
+
+	if bm.Bonus.Wager == "" {
+		return nil, fmt.Errorf("SCHEMA_MISSING_FIELD: bonus.wager")
+	}
+	wager, err := decimal.NewFromString(bm.Bonus.Wager)
+	if err != nil {
+		return nil, fmt.Errorf("SCHEMA_INVALID_DECIMAL: bonus.wager: %w", err)
+	}
+	if wager.LessThan(decimal.Zero) {
+		return nil, fmt.Errorf("SCHEMA_NEGATIVE_AMOUNT: bonus.wager must be >= 0")
+	}
+	ev.Wager = decimal.NullDecimal{Decimal: wager, Valid: true}
+
+	if bm.Bonus.TotalWager == "" {
+		return nil, fmt.Errorf("SCHEMA_MISSING_FIELD: bonus.totalWager")
+	}
+	totalWager, err := decimal.NewFromString(bm.Bonus.TotalWager)
+	if err != nil {
+		return nil, fmt.Errorf("SCHEMA_INVALID_DECIMAL: bonus.totalWager: %w", err)
+	}
+	if totalWager.LessThan(decimal.Zero) {
+		return nil, fmt.Errorf("SCHEMA_NEGATIVE_AMOUNT: bonus.totalWager must be >= 0")
+	}
+	ev.TotalWager = decimal.NullDecimal{Decimal: totalWager, Valid: true}
+
+	if bm.Bonus.PlayerBonusStatus < 1 || bm.Bonus.PlayerBonusStatus > 6 {
+		return nil, fmt.Errorf("SCHEMA_INVALID_ENUM: bonus.playerBonusStatus must be 1-6, got: %d", bm.Bonus.PlayerBonusStatus)
+	}
 	ev.PlayerBonusStatus = sql.NullInt32{Int32: int32(bm.Bonus.PlayerBonusStatus), Valid: true}
+
+	if bm.Bonus.CreatedAt < 0 {
+		return nil, fmt.Errorf("SCHEMA_INVALID_TIMESTAMP: bonus.createdAt must be >= 0")
+	}
+	if bm.Bonus.UpdatedAt < 0 {
+		return nil, fmt.Errorf("SCHEMA_INVALID_TIMESTAMP: bonus.updatedAt must be >= 0")
+	}
+	if bm.Bonus.UpdatedAt < bm.Bonus.CreatedAt {
+		return nil, fmt.Errorf("SCHEMA_INVALID_TIMESTAMP: bonus.updatedAt < bonus.createdAt")
+	}
 
 	if bm.Bonus.ExpiredAt != "" {
 		var expiredAt int64
 		_, err := fmt.Sscanf(bm.Bonus.ExpiredAt, "%d", &expiredAt)
 		if err != nil {
-			return nil, fmt.Errorf("invalid expired_at: %w", err)
+			return nil, fmt.Errorf("SCHEMA_INVALID_TIMESTAMP: bonus.expiredAt: %w", err)
+		}
+		if expiredAt < 0 {
+			return nil, fmt.Errorf("SCHEMA_INVALID_TIMESTAMP: bonus.expiredAt must be >= 0")
+		}
+		if expiredAt != 0 && expiredAt < bm.Bonus.CreatedAt {
+			return nil, fmt.Errorf("SCHEMA_INVALID_TIMESTAMP: bonus.expiredAt < bonus.createdAt")
 		}
 		ev.ExpiredAt = sql.NullInt64{Int64: expiredAt, Valid: true}
 	}
@@ -207,7 +261,24 @@ func (bm *BonusMessage) ToEventValidation(env, topic string, partition int, offs
 		ev.EventTS = sql.NullTime{Time: time.Unix(bm.Bonus.CreatedAt, 0).UTC(), Valid: true}
 	}
 
+	if bm.Bonus.IsWager != 0 && bm.Bonus.IsWager != 1 {
+		return nil, fmt.Errorf("SCHEMA_INVALID_ENUM: bonus.isWager must be 0 or 1, got: %d", bm.Bonus.IsWager)
+	}
 	ev.IsWager = sql.NullBool{Bool: bm.Bonus.IsWager == 1, Valid: true}
+
+	if bm.Bonus.IsWager == 0 {
+		if !wager.IsZero() {
+			return nil, fmt.Errorf("SCHEMA_BUSINESS_INVARIANT: isWager=0 requires wager=0, got: %s", wager.String())
+		}
+		if !totalWager.IsZero() {
+			return nil, fmt.Errorf("SCHEMA_BUSINESS_INVARIANT: isWager=0 requires totalWager=0, got: %s", totalWager.String())
+		}
+	} else {
+
+		if totalWager.LessThan(wager) {
+			return nil, fmt.Errorf("SCHEMA_BUSINESS_INVARIANT: isWager=1 requires totalWager >= wager, got totalWager=%s, wager=%s", totalWager.String(), wager.String())
+		}
+	}
 
 	return ev, nil
 }

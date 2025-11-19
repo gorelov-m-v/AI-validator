@@ -181,7 +181,18 @@ func (p *Processor) processEventWithSequence(ctx context.Context, event *models.
 			isDomainError = true
 		}
 	} else {
-		event.SequenceOK = true
+		var newStatus int
+		if event.PlayerBonusStatus.Valid {
+			newStatus = int(event.PlayerBonusStatus.Int32)
+		}
+		statusOK, statusReason := ValidateStatusTransition(0, newStatus, event.EventType)
+		if !statusOK {
+			event.SequenceOK = false
+			event.SequenceReason = sql.NullString{String: statusReason, Valid: true}
+			isDomainError = true
+		} else {
+			event.SequenceOK = true
+		}
 	}
 
 	insertedID, err := txRepo.InsertBonusEvent(ctx, event)
@@ -221,39 +232,49 @@ func (p *Processor) processEventWithSequence(ctx context.Context, event *models.
 		}
 	}
 
-	eventTS := event.ProcessedAt
-	if event.EventTS.Valid {
-		eventTS = event.EventTS.Time
-	}
+	if event.SchemaOK && event.SequenceOK {
+		eventTS := event.ProcessedAt
+		if event.EventTS.Valid {
+			eventTS = event.EventTS.Time
+		}
 
-	newState := &models.BonusSequenceState{
-		Env:                   p.env,
-		SeqKey:                event.SeqKey,
-		LastEventTS:           eventTS,
-		LastKafkaTopic:        event.KafkaTopic,
-		LastKafkaPartition:    event.KafkaPartition,
-		LastKafkaOffset:       event.KafkaOffset,
-		LastEventType:         sql.NullString{String: event.EventType, Valid: true},
-		LastPlayerBonusStatus: event.PlayerBonusStatus,
-		LastBalance:           event.Balance,
-		LastWager:             event.Wager,
-		LastTotalWager:        event.TotalWager,
-		LastValidationID:      sql.NullInt64{Int64: insertedID, Valid: true},
-	}
+		newState := &models.BonusSequenceState{
+			Env:                   p.env,
+			SeqKey:                event.SeqKey,
+			LastEventTS:           eventTS,
+			LastKafkaTopic:        event.KafkaTopic,
+			LastKafkaPartition:    event.KafkaPartition,
+			LastKafkaOffset:       event.KafkaOffset,
+			LastEventType:         sql.NullString{String: event.EventType, Valid: true},
+			LastPlayerBonusStatus: event.PlayerBonusStatus,
+			LastBalance:           event.Balance,
+			LastWager:             event.Wager,
+			LastTotalWager:        event.TotalWager,
+			LastValidationID:      sql.NullInt64{Int64: insertedID, Valid: true},
+		}
 
-	if err := txRepo.UpsertSequenceState(ctx, newState); err != nil {
-		p.errorCount.Add(1)
-		p.logger.Error("failed to upsert sequence state",
-			zap.Error(err),
+		if err := txRepo.UpsertSequenceState(ctx, newState); err != nil {
+			p.errorCount.Add(1)
+			p.logger.Error("failed to upsert sequence state",
+				zap.Error(err),
+				zap.String("env", p.env),
+				zap.String("seq_key", seqKey),
+				zap.Int64("offset", event.KafkaOffset),
+			)
+			return ProcessingResult{
+				Type:    ResultInfraError,
+				Message: "failed to upsert sequence state",
+				Err:     err,
+			}
+		}
+	} else {
+		p.logger.Warn("snapshot not updated due to validation failure",
 			zap.String("env", p.env),
 			zap.String("seq_key", seqKey),
+			zap.Bool("schema_ok", event.SchemaOK),
+			zap.Bool("sequence_ok", event.SequenceOK),
 			zap.Int64("offset", event.KafkaOffset),
 		)
-		return ProcessingResult{
-			Type:    ResultInfraError,
-			Message: "failed to upsert sequence state",
-			Err:     err,
-		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -287,16 +308,31 @@ func (p *Processor) processEventWithSequence(ctx context.Context, event *models.
 func (p *Processor) checkSequence(event *models.BonusEventValidation, prevState *models.BonusSequenceState) (bool, string) {
 	var reasons []string
 
-	if event.EventTS.Valid {
+	if event.EventTS.Valid && !prevState.LastEventTS.IsZero() {
 		if event.EventTS.Time.Before(prevState.LastEventTS) {
-			reasons = append(reasons, "event_ts moved backwards")
+			reasons = append(reasons, "SEQUENCE_EVENT_TS_DECREASED")
 		}
 	}
 
 	if event.KafkaTopic == prevState.LastKafkaTopic && event.KafkaPartition == prevState.LastKafkaPartition {
-		if event.KafkaOffset <= prevState.LastKafkaOffset {
-			reasons = append(reasons, "offset moved backwards")
+		if event.KafkaOffset < prevState.LastKafkaOffset {
+			reasons = append(reasons, "SEQUENCE_OFFSET_DECREASED")
 		}
+	}
+
+	var prevStatus int
+	if prevState.LastPlayerBonusStatus.Valid {
+		prevStatus = int(prevState.LastPlayerBonusStatus.Int32)
+	}
+
+	var newStatus int
+	if event.PlayerBonusStatus.Valid {
+		newStatus = int(event.PlayerBonusStatus.Int32)
+	}
+
+	statusOK, statusReason := ValidateStatusTransition(prevStatus, newStatus, event.EventType)
+	if !statusOK {
+		reasons = append(reasons, statusReason)
 	}
 
 	if len(reasons) > 0 {
