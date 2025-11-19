@@ -25,7 +25,7 @@ func NewRepository(db *DB, logger *zap.Logger) *Repository {
 
 func (r *Repository) InsertBonusEvent(ctx context.Context, event *models.BonusEventValidation) (int64, error) {
 	query := `
-		INSERT INTO bonus_events_validation (
+		INSERT INTO bonus_info_bonus_events (
 			env, kafka_topic, kafka_partition, kafka_offset,
 			processed_at, event_ts,
 			seq_key, player_id, node_id, bonus_id,
@@ -98,7 +98,7 @@ func (r *Repository) InsertBonusEvent(ctx context.Context, event *models.BonusEv
 
 func (r *Repository) InsertBonusEventWithError(ctx context.Context, env, topic string, partition int, offset int64, rawJSON []byte, schemaError string) (int64, error) {
 	query := `
-		INSERT INTO bonus_events_validation (
+		INSERT INTO bonus_info_bonus_events (
 			env, kafka_topic, kafka_partition, kafka_offset,
 			processed_at,
 			seq_key, player_id, node_id, bonus_id,
@@ -161,7 +161,7 @@ func (r *Repository) GetSequenceStateForUpdate(ctx context.Context, env string, 
 		SELECT env, seq_key, last_event_ts, last_kafka_topic, last_kafka_partition, last_kafka_offset,
 		       last_event_type, last_player_bonus_status, last_balance, last_wager, last_total_wager,
 		       last_validation_id
-		FROM bonus_sequence_state
+		FROM bonus_info_bonus_sequence
 		WHERE env = $1 AND seq_key = $2
 		FOR UPDATE
 	`
@@ -177,7 +177,7 @@ func (r *Repository) GetSequenceStateForUpdate(ctx context.Context, env string, 
 
 func (r *Repository) UpsertSequenceState(ctx context.Context, state *models.BonusSequenceState) error {
 	query := `
-		INSERT INTO bonus_sequence_state (
+		INSERT INTO bonus_info_bonus_sequence (
 			env, seq_key, last_event_ts, last_kafka_topic, last_kafka_partition, last_kafka_offset,
 			last_event_type, last_player_bonus_status, last_balance, last_wager, last_total_wager,
 			last_validation_id
@@ -224,7 +224,7 @@ func (r *TxRepository) GetSequenceStateForUpdate(ctx context.Context, env string
 		SELECT env, seq_key, last_event_ts, last_kafka_topic, last_kafka_partition, last_kafka_offset,
 		       last_event_type, last_player_bonus_status, last_balance, last_wager, last_total_wager,
 		       last_validation_id
-		FROM bonus_sequence_state
+		FROM bonus_info_bonus_sequence
 		WHERE env = $1 AND seq_key = $2
 		FOR UPDATE
 	`
@@ -240,7 +240,7 @@ func (r *TxRepository) GetSequenceStateForUpdate(ctx context.Context, env string
 
 func (r *TxRepository) InsertBonusEvent(ctx context.Context, event *models.BonusEventValidation) (int64, error) {
 	query := `
-		INSERT INTO bonus_events_validation (
+		INSERT INTO bonus_info_bonus_events (
 			env, kafka_topic, kafka_partition, kafka_offset,
 			processed_at, event_ts,
 			seq_key, player_id, node_id, bonus_id,
@@ -319,7 +319,7 @@ func (r *TxRepository) InsertBonusEvent(ctx context.Context, event *models.Bonus
 
 func (r *TxRepository) UpsertSequenceState(ctx context.Context, state *models.BonusSequenceState) error {
 	query := `
-		INSERT INTO bonus_sequence_state (
+		INSERT INTO bonus_info_bonus_sequence (
 			env, seq_key, last_event_ts, last_kafka_topic, last_kafka_partition, last_kafka_offset,
 			last_event_type, last_player_bonus_status, last_balance, last_wager, last_total_wager,
 			last_validation_id
@@ -347,4 +347,133 @@ func (r *TxRepository) UpsertSequenceState(ctx context.Context, state *models.Bo
 	}
 
 	return nil
+}
+
+// InsertPlayerBonusEvent inserts a player bonus event
+func (r *Repository) InsertPlayerBonusEvent(ctx context.Context, event *models.PlayerBonusEvent) (int64, error) {
+	query := `
+		INSERT INTO bonus_player_bonus_events (
+			env, kafka_topic, kafka_partition, kafka_offset,
+			processed_at,
+			player_bonus_id, player_id, bonus_id, bonus_category, currency, node_id,
+			balance, wager,
+			processing_transfer_type, processing_transfer_value,
+			processing_real_percent, processing_bonus_percent,
+			bet_min, bet_max, threshold,
+			event_type,
+			schema_ok, schema_error,
+			raw_message
+		) VALUES (
+			:env, :kafka_topic, :kafka_partition, :kafka_offset,
+			:processed_at,
+			:player_bonus_id, :player_id, :bonus_id, :bonus_category, :currency, :node_id,
+			:balance, :wager,
+			:processing_transfer_type, :processing_transfer_value,
+			:processing_real_percent, :processing_bonus_percent,
+			:bet_min, :bet_max, :threshold,
+			:event_type,
+			:schema_ok, :schema_error,
+			:raw_message
+		)
+		ON CONFLICT (env, kafka_topic, kafka_partition, kafka_offset) DO NOTHING
+		RETURNING id
+	`
+
+	rows, err := r.db.conn.NamedQueryContext(ctx, query, event)
+	if err != nil {
+		if pgErr, ok := err.(*pgconn.PgError); ok {
+			r.logger.Error("postgres error",
+				zap.String("code", pgErr.Code),
+				zap.String("message", pgErr.Message),
+				zap.String("detail", pgErr.Detail),
+			)
+		}
+		return 0, fmt.Errorf("failed to insert player bonus event: %w", err)
+	}
+	defer rows.Close()
+
+	var insertedID int64
+	if rows.Next() {
+		if err := rows.Scan(&insertedID); err != nil {
+			return 0, fmt.Errorf("failed to scan inserted ID: %w", err)
+		}
+
+		r.logger.Debug("player bonus event inserted",
+			zap.String("env", event.Env),
+			zap.String("player_bonus_id", event.PlayerBonusID.String()),
+			zap.String("event_type", event.EventType),
+			zap.Int64("offset", event.KafkaOffset),
+			zap.Int64("id", insertedID),
+		)
+
+		return insertedID, nil
+	}
+
+	r.logger.Debug("duplicate player bonus event skipped",
+		zap.String("env", event.Env),
+		zap.String("topic", event.KafkaTopic),
+		zap.Int("partition", event.KafkaPartition),
+		zap.Int64("offset", event.KafkaOffset),
+	)
+
+	return 0, nil
+}
+
+// InsertPlayerBonusEventWithError inserts a player bonus event with error
+func (r *Repository) InsertPlayerBonusEventWithError(ctx context.Context, env, topic string, partition int, offset int64, rawJSON []byte, schemaError string) (int64, error) {
+	query := `
+		INSERT INTO bonus_player_bonus_events (
+			env, kafka_topic, kafka_partition, kafka_offset,
+			processed_at,
+			player_bonus_id, player_id, bonus_id, node_id,
+			event_type,
+			schema_ok, schema_error,
+			raw_message
+		) VALUES (
+			$1, $2, $3, $4,
+			NOW(),
+			'00000000-0000-0000-0000-000000000000',
+			'00000000-0000-0000-0000-000000000000',
+			'00000000-0000-0000-0000-000000000000',
+			'00000000-0000-0000-0000-000000000000',
+			'PARSE_ERROR',
+			FALSE, $5,
+			$6
+		)
+		ON CONFLICT (env, kafka_topic, kafka_partition, kafka_offset) DO NOTHING
+		RETURNING id
+	`
+
+	rows, err := r.db.conn.QueryxContext(ctx, query, env, topic, partition, offset, schemaError, rawJSON)
+	if err != nil {
+		return 0, fmt.Errorf("failed to insert player bonus error event: %w", err)
+	}
+	defer rows.Close()
+
+	var insertedID int64
+	if rows.Next() {
+		if err := rows.Scan(&insertedID); err != nil {
+			return 0, fmt.Errorf("failed to scan inserted ID: %w", err)
+		}
+
+		r.logger.Warn("invalid player bonus event inserted",
+			zap.String("env", env),
+			zap.String("topic", topic),
+			zap.Int("partition", partition),
+			zap.Int64("offset", offset),
+			zap.Int64("id", insertedID),
+			zap.String("error", schemaError),
+		)
+
+		return insertedID, nil
+	}
+
+	r.logger.Debug("duplicate player bonus error event skipped",
+		zap.String("env", env),
+		zap.String("topic", topic),
+		zap.Int("partition", partition),
+		zap.Int64("offset", offset),
+	)
+
+	return 0, nil
 }

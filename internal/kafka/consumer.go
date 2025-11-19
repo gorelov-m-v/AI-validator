@@ -38,10 +38,10 @@ func NewConsumer(brokers []string, topic, groupID string, logger *zap.Logger) (*
 		Brokers:        brokers,
 		Topic:          topic,
 		GroupID:        groupID,
-		MinBytes:       1,    // 1 byte
-		MaxBytes:       10e6, // 10MB
-		StartOffset:    kafka.LastOffset,
-		CommitInterval: 0, // Disable auto-commit, use manual batch commits
+		MinBytes:       1,                // 1 byte
+		MaxBytes:       10e6,             // 10MB
+		StartOffset:    kafka.LastOffset, // Start from latest for new consumer groups
+		CommitInterval: 0,                // Disable auto-commit, use manual batch commits
 		Logger: kafka.LoggerFunc(func(msg string, args ...interface{}) {
 			logger.Debug(fmt.Sprintf(msg, args...))
 		}),

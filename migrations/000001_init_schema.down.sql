@@ -1,2 +1,3 @@
-DROP TABLE IF EXISTS bonus_sequence_state;
-DROP TABLE IF EXISTS bonus_events_validation;
+DROP TABLE IF EXISTS bonus_player_bonus_events;
+DROP TABLE IF EXISTS bonus_info_bonus_sequence;
+DROP TABLE IF EXISTS bonus_info_bonus_events;

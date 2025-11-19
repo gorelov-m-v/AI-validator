@@ -210,3 +210,175 @@ func (bm *BonusMessage) ToEventValidation(env, topic string, partition int, offs
 
 	return ev, nil
 }
+
+// PlayerBonusMessage represents the bonus.v1.playerBonus topic message
+type PlayerBonusMessage struct {
+	Message struct {
+		EventType string `json:"event_type"`
+	} `json:"message"`
+	PlayerBonus struct {
+		ID                      string  `json:"id"`
+		PlayerID                string  `json:"player_id"`
+		BonusID                 string  `json:"bonus_id"`
+		BonusCategory           string  `json:"bonus_category"`
+		Currency                string  `json:"currency"`
+		Node                    string  `json:"node"`
+		Balance                 string  `json:"balance"`
+		Wager                   string  `json:"wager"`
+		ProcessingTransferType  int     `json:"processing_transfer_type"`
+		ProcessingTransferValue string  `json:"processing_transfer_value"`
+		ProcessingRealPercent   int     `json:"processing_real_percent"`
+		ProcessingBonusPercent  int     `json:"processing_bonus_percent"`
+		BetMin                  *string `json:"bet_min"`
+		BetMax                  *string `json:"bet_max"`
+		Threshold               string  `json:"threshold"`
+	} `json:"player_bonus"`
+}
+
+// PlayerBonusEvent represents the bonus_player_bonus_events table
+type PlayerBonusEvent struct {
+	ID             int64  `db:"id"`
+	Env            string `db:"env"`
+	KafkaTopic     string `db:"kafka_topic"`
+	KafkaPartition int    `db:"kafka_partition"`
+	KafkaOffset    int64  `db:"kafka_offset"`
+
+	ProcessedAt time.Time `db:"processed_at"`
+
+	PlayerBonusID uuid.UUID      `db:"player_bonus_id"`
+	PlayerID      uuid.UUID      `db:"player_id"`
+	BonusID       uuid.UUID      `db:"bonus_id"`
+	BonusCategory sql.NullString `db:"bonus_category"`
+	Currency      sql.NullString `db:"currency"`
+	NodeID        uuid.UUID      `db:"node_id"`
+
+	Balance                 decimal.NullDecimal `db:"balance"`
+	Wager                   decimal.NullDecimal `db:"wager"`
+	ProcessingTransferType  sql.NullInt32       `db:"processing_transfer_type"`
+	ProcessingTransferValue decimal.NullDecimal `db:"processing_transfer_value"`
+	ProcessingRealPercent   sql.NullInt32       `db:"processing_real_percent"`
+	ProcessingBonusPercent  sql.NullInt32       `db:"processing_bonus_percent"`
+	BetMin                  decimal.NullDecimal `db:"bet_min"`
+	BetMax                  decimal.NullDecimal `db:"bet_max"`
+	Threshold               decimal.NullDecimal `db:"threshold"`
+
+	EventType string `db:"event_type"`
+
+	SchemaOK    bool           `db:"schema_ok"`
+	SchemaError sql.NullString `db:"schema_error"`
+
+	Label        sql.NullString `db:"label"`
+	LabelComment sql.NullString `db:"label_comment"`
+	LabelUser    sql.NullString `db:"label_user"`
+	LabelTS      sql.NullTime   `db:"label_ts"`
+
+	RawMessage json.RawMessage `db:"raw_message"`
+}
+
+func ParsePlayerBonusMessage(data []byte) (*PlayerBonusMessage, error) {
+	var msg PlayerBonusMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal JSON: %w", err)
+	}
+	return &msg, nil
+}
+
+func (pbm *PlayerBonusMessage) ToPlayerBonusEvent(env, topic string, partition int, offset int64, rawJSON []byte) (*PlayerBonusEvent, error) {
+	ev := &PlayerBonusEvent{
+		Env:            env,
+		KafkaTopic:     topic,
+		KafkaPartition: partition,
+		KafkaOffset:    offset,
+		ProcessedAt:    time.Now().UTC(),
+		SchemaOK:       true,
+		RawMessage:     rawJSON,
+	}
+
+	playerBonusID, err := uuid.Parse(pbm.PlayerBonus.ID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid player_bonus_id: %w", err)
+	}
+	ev.PlayerBonusID = playerBonusID
+
+	playerID, err := uuid.Parse(pbm.PlayerBonus.PlayerID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid player_id: %w", err)
+	}
+	ev.PlayerID = playerID
+
+	bonusID, err := uuid.Parse(pbm.PlayerBonus.BonusID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid bonus_id: %w", err)
+	}
+	ev.BonusID = bonusID
+
+	nodeID, err := uuid.Parse(pbm.PlayerBonus.Node)
+	if err != nil {
+		return nil, fmt.Errorf("invalid node_id: %w", err)
+	}
+	ev.NodeID = nodeID
+
+	ev.EventType = pbm.Message.EventType
+
+	if pbm.PlayerBonus.BonusCategory != "" {
+		ev.BonusCategory = sql.NullString{String: pbm.PlayerBonus.BonusCategory, Valid: true}
+	}
+	if pbm.PlayerBonus.Currency != "" {
+		ev.Currency = sql.NullString{String: pbm.PlayerBonus.Currency, Valid: true}
+	}
+
+	if pbm.PlayerBonus.Balance != "" {
+		val, err := decimal.NewFromString(pbm.PlayerBonus.Balance)
+		if err != nil {
+			return nil, fmt.Errorf("invalid balance: %w", err)
+		}
+		ev.Balance = decimal.NullDecimal{Decimal: val, Valid: true}
+	}
+
+	if pbm.PlayerBonus.Wager != "" {
+		val, err := decimal.NewFromString(pbm.PlayerBonus.Wager)
+		if err != nil {
+			return nil, fmt.Errorf("invalid wager: %w", err)
+		}
+		ev.Wager = decimal.NullDecimal{Decimal: val, Valid: true}
+	}
+
+	ev.ProcessingTransferType = sql.NullInt32{Int32: int32(pbm.PlayerBonus.ProcessingTransferType), Valid: true}
+
+	if pbm.PlayerBonus.ProcessingTransferValue != "" {
+		val, err := decimal.NewFromString(pbm.PlayerBonus.ProcessingTransferValue)
+		if err != nil {
+			return nil, fmt.Errorf("invalid processing_transfer_value: %w", err)
+		}
+		ev.ProcessingTransferValue = decimal.NullDecimal{Decimal: val, Valid: true}
+	}
+
+	ev.ProcessingRealPercent = sql.NullInt32{Int32: int32(pbm.PlayerBonus.ProcessingRealPercent), Valid: true}
+	ev.ProcessingBonusPercent = sql.NullInt32{Int32: int32(pbm.PlayerBonus.ProcessingBonusPercent), Valid: true}
+
+	if pbm.PlayerBonus.BetMin != nil && *pbm.PlayerBonus.BetMin != "" {
+		val, err := decimal.NewFromString(*pbm.PlayerBonus.BetMin)
+		if err != nil {
+			return nil, fmt.Errorf("invalid bet_min: %w", err)
+		}
+		ev.BetMin = decimal.NullDecimal{Decimal: val, Valid: true}
+	}
+
+	if pbm.PlayerBonus.BetMax != nil && *pbm.PlayerBonus.BetMax != "" {
+		val, err := decimal.NewFromString(*pbm.PlayerBonus.BetMax)
+		if err != nil {
+			return nil, fmt.Errorf("invalid bet_max: %w", err)
+		}
+		ev.BetMax = decimal.NullDecimal{Decimal: val, Valid: true}
+	}
+
+	if pbm.PlayerBonus.Threshold != "" {
+		val, err := decimal.NewFromString(pbm.PlayerBonus.Threshold)
+		if err != nil {
+			return nil, fmt.Errorf("invalid threshold: %w", err)
+		}
+		ev.Threshold = decimal.NullDecimal{Decimal: val, Valid: true}
+	}
+
+	return ev, nil
+}

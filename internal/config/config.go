@@ -14,12 +14,17 @@ type Config struct {
 	DB       DBConfig    `mapstructure:"db"`
 }
 
+type TopicConfig struct {
+	Topic          string `mapstructure:"topic"`
+	GroupID        string `mapstructure:"group_id"`
+	BatchSize      int    `mapstructure:"batch_size"`
+	BatchMaxWaitMs int    `mapstructure:"batch_max_wait_ms"`
+}
+
 type KafkaConfig struct {
-	Brokers        []string `mapstructure:"brokers"`
-	Topic          string   `mapstructure:"topic"`
-	GroupID        string   `mapstructure:"group_id"`
-	BatchSize      int      `mapstructure:"batch_size"`
-	BatchMaxWaitMs int      `mapstructure:"batch_max_wait_ms"`
+	Brokers          []string    `mapstructure:"brokers"`
+	BonusInfoBonus   TopicConfig `mapstructure:"bonus_info_bonus"`
+	BonusPlayerBonus TopicConfig `mapstructure:"bonus_player_bonus"`
 }
 
 type DBConfig struct {
@@ -67,18 +72,35 @@ func (c *Config) Validate() error {
 	if len(c.Kafka.Brokers) == 0 {
 		return fmt.Errorf("kafka.brokers is required")
 	}
-	if c.Kafka.Topic == "" {
-		return fmt.Errorf("kafka.topic is required")
+
+	// Validate bonus_info_bonus topic config
+	if c.Kafka.BonusInfoBonus.Topic == "" {
+		return fmt.Errorf("kafka.bonus_info_bonus.topic is required")
 	}
-	if c.Kafka.GroupID == "" {
-		return fmt.Errorf("kafka.group_id is required")
+	if c.Kafka.BonusInfoBonus.GroupID == "" {
+		return fmt.Errorf("kafka.bonus_info_bonus.group_id is required")
 	}
-	if c.Kafka.BatchSize == 0 {
-		c.Kafka.BatchSize = 100
+	if c.Kafka.BonusInfoBonus.BatchSize == 0 {
+		c.Kafka.BonusInfoBonus.BatchSize = 100
 	}
-	if c.Kafka.BatchMaxWaitMs == 0 {
-		c.Kafka.BatchMaxWaitMs = 200
+	if c.Kafka.BonusInfoBonus.BatchMaxWaitMs == 0 {
+		c.Kafka.BonusInfoBonus.BatchMaxWaitMs = 200
 	}
+
+	// Validate bonus_player_bonus topic config
+	if c.Kafka.BonusPlayerBonus.Topic == "" {
+		return fmt.Errorf("kafka.bonus_player_bonus.topic is required")
+	}
+	if c.Kafka.BonusPlayerBonus.GroupID == "" {
+		return fmt.Errorf("kafka.bonus_player_bonus.group_id is required")
+	}
+	if c.Kafka.BonusPlayerBonus.BatchSize == 0 {
+		c.Kafka.BonusPlayerBonus.BatchSize = 100
+	}
+	if c.Kafka.BonusPlayerBonus.BatchMaxWaitMs == 0 {
+		c.Kafka.BonusPlayerBonus.BatchMaxWaitMs = 200
+	}
+
 	if c.DB.DSN == "" {
 		return fmt.Errorf("db.dsn is required")
 	}
