@@ -192,9 +192,10 @@ func (bm *BonusMessage) ToEventValidation(env, topic string, partition int, offs
 	if bm.Bonus.ExpiredAt != "" {
 		var expiredAt int64
 		_, err := fmt.Sscanf(bm.Bonus.ExpiredAt, "%d", &expiredAt)
-		if err == nil {
-			ev.ExpiredAt = sql.NullInt64{Int64: expiredAt, Valid: true}
+		if err != nil {
+			return nil, fmt.Errorf("invalid expired_at: %w", err)
 		}
+		ev.ExpiredAt = sql.NullInt64{Int64: expiredAt, Valid: true}
 	}
 
 	ev.CreatedAt = bm.Bonus.CreatedAt

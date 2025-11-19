@@ -225,16 +225,6 @@ CREATE TABLE bonus_player_bonus_events (
    docker-compose logs -f ai-validator
    ```
 
-5. **Проверьте health-check**:
-   ```bash
-   curl http://localhost:8080/health
-   ```
-
-   Ответ:
-   ```json
-   {"status":"healthy","database":"ok","kafka":"connected"}
-   ```
-
 ---
 
 ## Примеры конфигурации

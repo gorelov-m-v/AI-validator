@@ -44,7 +44,6 @@ func Load(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
-	// Override DSN from environment variable if present
 	if envDSN := os.Getenv("DB_DSN"); envDSN != "" {
 		cfg.DB.DSN = envDSN
 	}
@@ -73,7 +72,6 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("kafka.brokers is required")
 	}
 
-	// Validate bonus_info_bonus topic config
 	if c.Kafka.BonusInfoBonus.Topic == "" {
 		return fmt.Errorf("kafka.bonus_info_bonus.topic is required")
 	}
@@ -87,7 +85,6 @@ func (c *Config) Validate() error {
 		c.Kafka.BonusInfoBonus.BatchMaxWaitMs = 200
 	}
 
-	// Validate bonus_player_bonus topic config
 	if c.Kafka.BonusPlayerBonus.Topic == "" {
 		return fmt.Errorf("kafka.bonus_player_bonus.topic is required")
 	}

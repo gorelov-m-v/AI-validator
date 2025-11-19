@@ -23,6 +23,11 @@ const (
 	ResultInfraError
 )
 
+var supportedTypes = map[string]bool{
+	"playerBonusCreate": true,
+	"playerBonusUpdate": true,
+}
+
 type ProcessingResult struct {
 	Type    ProcessingResultType
 	Message string
@@ -59,10 +64,6 @@ func (p *Processor) ProcessMessage(ctx context.Context, msg *kafka.Message) Proc
 		return p.handleSchemaError(ctx, msg, fmt.Sprintf("JSON parsing failed: %v", err))
 	}
 
-	supportedTypes := map[string]bool{
-		"playerBonusCreate": true,
-		"playerBonusUpdate": true,
-	}
 	if !supportedTypes[bonusMsg.Message.EventType] {
 		p.logger.Debug("unsupported eventType, skipping",
 			zap.String("event_type", bonusMsg.Message.EventType),
